@@ -5,17 +5,36 @@ Provides high-level commands for walking, standing, and movement control
 
 import time
 import numpy as np
-from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
-from unitree_sdk2py.idl.default import unitree_go_msg_dds__SportModeCmd_
-from unitree_sdk2py.idl.default import unitree_go_msg_dds__SportModeState_
+from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize
+# The generated IDL symbols in `unitree_sdk2py.idl.default` can vary by SDK
+# version and may not be present under these exact names. These specific
+# symbols were not used directly in this module, so we avoid importing them
+# to prevent ImportError on some SDK installs.
 from unitree_sdk2py.go2.sport.sport_client import SportClient
 
 
 class G1HighLevelController:
     """High-level controller for Unitree G1 robot"""
     
-    def __init__(self):
-        """Initialize the high-level controller"""
+    def __init__(self, domain_id=0, network_interface="eth0"):
+        """
+        Initialize the high-level controller
+        
+        Args:
+            domain_id: DDS domain ID (default: 0)
+            network_interface: Network interface to use (default: "eth0")
+        """
+        # Initialize the SDK DDS subsystem FIRST
+        print(f"Initializing SDK with domain ID {domain_id} on interface {network_interface}...")
+        try:
+            ChannelFactoryInitialize(domain_id, network_interface)
+            print("✓ SDK DDS subsystem initialized")
+        except Exception as e:
+            print(f"✗ SDK initialization failed: {e}")
+            print("Note: Ensure robot is powered on and in SDK control mode")
+            raise
+        
+        print("Creating SportClient...")
         self.sport_client = SportClient()
         self.sport_client.Init()
         
@@ -27,12 +46,32 @@ class G1HighLevelController:
         self.max_yaw_speed = 1.0  # rad/s
         
         print("G1 High-Level Controller initialized")
+        print("\n⚠️  IMPORTANT: Ensure robot is in SDK control mode!")
+        print("   - Check robot display/app")
+        print("   - May need to press L2+A or use app to enable SDK mode\n")
     
     def connect(self):
         """Connect to the robot"""
         try:
             self.is_connected = True
             print("Connected to G1 robot")
+            
+            # Send a heartbeat to check if robot is responsive
+            print("Testing robot connection with heartbeat...")
+            for i in range(3):
+                try:
+                    self.sport_client.HeartBeat()
+                    print(f"  Heartbeat {i+1}/3 sent")
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f"  Heartbeat {i+1}/3 failed: {e}")
+            
+            print("\n✓ If you see [ClientStub] errors above:")
+            print("  1. Robot must be in SDK/Developer control mode")
+            print("  2. Use robot app or controller to enable SDK mode")
+            print("  3. Some robots require: Hold L2+A on controller")
+            print("  4. Check robot display shows 'SDK Mode' or similar\n")
+            
             return True
         except Exception as e:
             print(f"Failed to connect: {e}")
