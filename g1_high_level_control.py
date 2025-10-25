@@ -231,6 +231,149 @@ class G1HighLevelController:
         time.sleep(duration)
         self.stop_move()
     
+    def wave(self, arm='right', duration=3.0):
+        """
+        Perform a waving motion
+        
+        Args:
+            arm: Which arm to wave ('left' or 'right')
+            duration: Duration of waving motion in seconds
+        """
+        try:
+            print(f"Waving with {arm} arm for {duration} seconds")
+            
+            # First, ensure robot is standing
+            self.balance_stand()
+            time.sleep(1)
+            
+            # Wave motion using pose adjustments
+            wave_cycles = int(duration * 2)  # 2 cycles per second
+            
+            for cycle in range(wave_cycles):
+                # Wave up motion - raise body slightly and tilt
+                if arm == 'right':
+                    self.pose(body_height=0.02, roll=0.1, pitch=0.0, yaw=0.0)
+                else:  # left arm
+                    self.pose(body_height=0.02, roll=-0.1, pitch=0.0, yaw=0.0)
+                time.sleep(0.25)
+                
+                # Wave down motion - return to neutral
+                self.pose(body_height=0.0, roll=0.0, pitch=0.0, yaw=0.0)
+                time.sleep(0.25)
+            
+            # Return to normal standing position
+            self.balance_stand()
+            return True
+            
+        except Exception as e:
+            print(f"Wave command failed: {e}")
+            return False
+    
+    def bend_down(self, depth=0.1, duration=2.0):
+        """
+        Bend down by lowering body height
+        
+        Args:
+            depth: How much to lower body (m), range: 0.01 to 0.15
+            duration: How long to hold the bent position (seconds)
+        """
+        try:
+            print(f"Bending down by {depth}m for {duration} seconds")
+            
+            # Ensure robot is standing first
+            self.balance_stand()
+            time.sleep(1)
+            
+            # Clamp depth to safe range
+            depth = np.clip(depth, 0.01, 0.15)
+            
+            # Lower body gradually
+            self.pose(body_height=-depth, roll=0.0, pitch=0.0, yaw=0.0)
+            time.sleep(duration)
+            
+            # Return to normal height
+            self.pose(body_height=0.0, roll=0.0, pitch=0.0, yaw=0.0)
+            time.sleep(0.5)
+            
+            # Ensure stable standing
+            self.balance_stand()
+            return True
+            
+        except Exception as e:
+            print(f"Bend down command failed: {e}")
+            return False
+    
+    def handshake(self, arm='right', duration=2.0):
+        """
+        Extend arm for handshake
+        
+        Args:
+            arm: Which arm to extend ('left' or 'right')
+            duration: How long to hold the handshake position (seconds)
+        """
+        try:
+            print(f"Extending {arm} arm for handshake for {duration} seconds")
+            
+            # Ensure robot is standing
+            self.balance_stand()
+            time.sleep(1)
+            
+            # Extend arm by tilting body and adjusting pose
+            if arm == 'right':
+                # Tilt body to the right and slightly forward
+                self.pose(body_height=0.0, roll=0.2, pitch=0.1, yaw=0.0)
+            else:  # left arm
+                # Tilt body to the left and slightly forward
+                self.pose(body_height=0.0, roll=-0.2, pitch=0.1, yaw=0.0)
+            
+            time.sleep(duration)
+            
+            # Return to neutral position
+            self.pose(body_height=0.0, roll=0.0, pitch=0.0, yaw=0.0)
+            time.sleep(0.5)
+            
+            # Ensure stable standing
+            self.balance_stand()
+            return True
+            
+        except Exception as e:
+            print(f"Handshake command failed: {e}")
+            return False
+    
+    def bow(self, depth=0.08, duration=2.0):
+        """
+        Perform a bowing motion
+        
+        Args:
+            depth: How much to bow forward (pitch angle in radians)
+            duration: How long to hold the bow (seconds)
+        """
+        try:
+            print(f"Bowing forward for {duration} seconds")
+            
+            # Ensure robot is standing
+            self.balance_stand()
+            time.sleep(1)
+            
+            # Clamp depth to safe range
+            depth = np.clip(depth, 0.05, 0.15)
+            
+            # Bow forward
+            self.pose(body_height=0.0, roll=0.0, pitch=depth, yaw=0.0)
+            time.sleep(duration)
+            
+            # Return to upright position
+            self.pose(body_height=0.0, roll=0.0, pitch=0.0, yaw=0.0)
+            time.sleep(0.5)
+            
+            # Ensure stable standing
+            self.balance_stand()
+            return True
+            
+        except Exception as e:
+            print(f"Bow command failed: {e}")
+            return False
+    
     def emergency_stop(self):
         """Emergency stop - damp all motors"""
         print("EMERGENCY STOP!")
@@ -269,5 +412,63 @@ def quick_test():
     print("Test complete!")
 
 
+def gesture_demo():
+    """Demonstration of gesture commands"""
+    controller = G1HighLevelController()
+    controller.connect()
+    
+    print("\n=== Gesture Demonstration ===")
+    
+    # Stand up first
+    controller.stand_up()
+    time.sleep(3)
+    
+    # Wave with right arm
+    print("\n1. Waving with right arm...")
+    controller.wave(arm='right', duration=2)
+    time.sleep(1)
+    
+    # Wave with left arm
+    print("\n2. Waving with left arm...")
+    controller.wave(arm='left', duration=2)
+    time.sleep(1)
+    
+    # Bend down
+    print("\n3. Bending down...")
+    controller.bend_down(depth=0.08, duration=2)
+    time.sleep(1)
+    
+    # Handshake with right arm
+    print("\n4. Handshake with right arm...")
+    controller.handshake(arm='right', duration=2)
+    time.sleep(1)
+    
+    # Handshake with left arm
+    print("\n5. Handshake with left arm...")
+    controller.handshake(arm='left', duration=2)
+    time.sleep(1)
+    
+    # Bow
+    print("\n6. Bowing...")
+    controller.bow(depth=0.08, duration=2)
+    time.sleep(1)
+    
+    # Stand down
+    controller.stand_down()
+    time.sleep(2)
+    
+    controller.shutdown()
+    print("Gesture demonstration complete!")
+
+
 if __name__ == "__main__":
-    quick_test()
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "gesture":
+        gesture_demo()
+    else:
+        print("Usage: python g1_high_level_control.py [gesture]")
+        print("  - No argument: Run basic movement test")
+        print("  - 'gesture': Run gesture demonstration")
+        print("\nRunning basic test...")
+        quick_test()
