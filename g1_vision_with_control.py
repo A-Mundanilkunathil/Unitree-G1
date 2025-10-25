@@ -55,7 +55,7 @@ class G1VisionControl:
         print(f"✓ Vision system ready (frame center: {self.frame_center})")
         return True
     
-    def track_object(self, target_class='person', duration=30, speed=0.2):
+    def track_object(self, target_class='person', duration=30, speed=0.2, display=True):
         """
         Track and follow a specific object class
         
@@ -63,6 +63,7 @@ class G1VisionControl:
             target_class: Object class to track (e.g., 'person', 'face', 'bottle')
             duration: How long to track (seconds)
             speed: Movement speed multiplier
+            display: Show display (set False for headless mode)
         """
         if self.detector is None:
             print("✗ Vision system not setup. Call setup_vision() first.")
@@ -72,10 +73,13 @@ class G1VisionControl:
         print(f"\n{'='*60}")
         print(f"TRACKING: {target_class}")
         print(f"Duration: {duration}s | Speed: {speed}")
+        print(f"Mode: {'Display' if display else 'Headless (saving to files)'}")
         print(f"{'='*60}\n")
         
         start_time = time.time()
         no_detection_count = 0
+        frame_count = 0
+        save_interval = 30  # Save every 30 frames (~1 sec)
         
         try:
             while time.time() - start_time < duration:
@@ -118,10 +122,29 @@ class G1VisionControl:
                     cv2.putText(annotated, status, (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
-                    cv2.imshow('G1 Object Tracking', annotated)
+                    if display:
+                        cv2.imshow('G1 Object Tracking', annotated)
+                    elif frame_count % save_interval == 0:
+                        filename = f"tracking_{int(time.time())}.jpg"
+                        cv2.imwrite(filename, annotated)
+                        print(f"\rSaved: {filename} | Tracking {class_name}  ", end='', flush=True)
+                    else:
+                        # Save less frequently but still show we're tracking
+                        print(f"\rTracking {class_name} ({confidence:.2f}) | dx:{dx:4.0f} dy:{dy:4.0f}  ", end='', flush=True)
+                    
+                    frame_count += 1
                     
                 else:
                     no_detection_count += 1
+                    frame_count += 1
+                    
+                    # Save frame even when searching (less frequently)
+                    if not display and frame_count % (save_interval * 3) == 0:
+                        cv2.putText(frame, f"SEARCHING: {target_class}", (10, 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        filename = f"searching_{int(time.time())}.jpg"
+                        cv2.imwrite(filename, frame)
+                        print(f"\rSearching for {target_class}... (saved {filename})  ", end='', flush=True)
                     
                     # Stop if lost target for too long
                     if no_detection_count > 30:  # ~1 second at 30fps
@@ -129,11 +152,12 @@ class G1VisionControl:
                             self.robot.stop_move()
                         print(f"\rLost target: {target_class}          ", end='', flush=True)
                     
-                    cv2.putText(frame, f"SEARCHING: {target_class}", (10, 30),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.imshow('G1 Object Tracking', frame)
+                    if display:
+                        cv2.putText(frame, f"SEARCHING: {target_class}", (10, 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        cv2.imshow('G1 Object Tracking', frame)
                 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                if display and cv2.waitKey(1) & 0xFF == ord('q'):
                     break
                 
                 time.sleep(0.03)  # ~30 fps
@@ -144,6 +168,8 @@ class G1VisionControl:
         finally:
             if self.robot:
                 self.robot.stop_move()
+            if display:
+                cv2.destroyAllWindows()
             print("\n✓ Tracking complete")
     
     def _control_from_offset(self, dx, dy, area, speed):
@@ -266,21 +292,44 @@ def demo_tracking():
     print("G1 VISION TRACKING DEMO")
     print("="*60)
     
-    # Setup vision control
-    vision_control = G1VisionControl()
+    # Initialize robot controller
+    try:
+        from g1_high_level_control import G1HighLevelController
+        print("\nInitializing robot controller...")
+        robot = G1HighLevelController(domain_id=0, network_interface="eth0")
+        print("✓ Robot controller initialized")
+        print("⚠️  Make sure robot is in SDK mode (L2+A on controller)")
+    except Exception as e:
+        print(f"\n⚠️  Could not initialize robot controller: {e}")
+        print("Vision will work but robot won't move")
+        robot = None
     
-    # Setup vision (cascade is easiest, no model files needed)
-    if not vision_control.setup_vision(model_type='cascade', camera_source=0):
-        return
+    # Setup vision control with robot
+    vision_control = G1VisionControl(robot_controller=robot)
+    
+    # Try working cameras (2 or 4 from diagnostic)
+    camera_source = 4
+    print(f"\nTrying camera {camera_source}...")
+    if not vision_control.setup_vision(model_type='cascade', camera_source=camera_source):
+        print(f"Camera {camera_source} failed, trying camera 4...")
+        camera_source = 2
+        if not vision_control.setup_vision(model_type='cascade', camera_source=camera_source):
+            print("✗ No working cameras found")
+            print("Run: python3 find_cameras.py")
+            return
     
     print("\n✓ Vision ready")
     print("\nStarting face tracking...")
-    print("The robot would move to center the face in frame")
-    print("(Robot movement disabled in this demo)")
-    print("\nPress 'q' in the window to stop\n")
+    if robot:
+        print("Robot will move to center the face in frame")
+    else:
+        print("(Robot movement disabled - controller not initialized)")
+    print("Running in HEADLESS mode - saving frames to files")
+    print("Images saved every ~1 second when tracking")
+    print("\nPress Ctrl+C to stop early\n")
     
-    # Track faces for 30 seconds
-    vision_control.track_object(target_class='face', duration=30, speed=0.3)
+    # Track faces for 30 seconds in headless mode
+    vision_control.track_object(target_class='face', duration=30, speed=0.3, display=False)
     
     vision_control.shutdown()
 
@@ -293,14 +342,23 @@ def demo_counting():
     
     vision_control = G1VisionControl()
     
-    if not vision_control.setup_vision(model_type='cascade', camera_source=0):
-        return
+    # Try working cameras (2 or 4 from diagnostic)
+    camera_source = 4
+    print(f"\nTrying camera {camera_source}...")
+    if not vision_control.setup_vision(model_type='cascade', camera_source=camera_source):
+        print(f"Camera {camera_source} failed, trying camera 4...")
+        camera_source = 2
+        if not vision_control.setup_vision(model_type='cascade', camera_source=camera_source):
+            print("✗ No working cameras found")
+            print("Run: python3 find_cameras.py")
+            return
     
     print("\n✓ Vision ready")
     print("\nCounting objects for 10 seconds...")
-    print("Press 'q' to stop early\n")
+    print("Running in HEADLESS mode - no display")
+    print("Press Ctrl+C to stop early\n")
     
-    vision_control.count_objects(duration=10, display=True)
+    vision_control.count_objects(duration=10, display=False)
     vision_control.shutdown()
 
 
