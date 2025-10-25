@@ -62,54 +62,139 @@ class G1VisionDetector:
     
     def _load_yolo(self):
         """Load YOLO model for object detection"""
+        import os
+        import urllib.request
+        
         try:
             # YOLO v4-tiny weights and config
-            weights_path = 'models/yolov4-tiny.weights'
-            config_path = 'models/yolov4-tiny.cfg'
-            names_path = 'models/coco.names'
+            model_dir = 'models'
+            weights_path = os.path.join(model_dir, 'yolov4-tiny.weights')
+            config_path = os.path.join(model_dir, 'yolov4-tiny.cfg')
+            names_path = os.path.join(model_dir, 'coco.names')
             
-            # Try to load pre-trained model
+            # Create models directory if it doesn't exist
+            os.makedirs(model_dir, exist_ok=True)
+            
+            # Download URLs
+            weights_url = 'https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights'
+            config_url = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg'
+            names_url = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names'
+            
+            # Download files if they don't exist
+            if not os.path.exists(weights_path):
+                print("Downloading YOLO weights (~23 MB)...")
+                try:
+                    urllib.request.urlretrieve(weights_url, weights_path)
+                    print("✓ Weights downloaded")
+                except Exception as e:
+                    print(f"✗ Failed to download weights: {e}")
+                    raise
+            
+            if not os.path.exists(config_path):
+                print("Downloading YOLO config...")
+                try:
+                    urllib.request.urlretrieve(config_url, config_path)
+                    print("✓ Config downloaded")
+                except Exception as e:
+                    print(f"✗ Failed to download config: {e}")
+                    raise
+            
+            if not os.path.exists(names_path):
+                print("Downloading class names...")
+                try:
+                    urllib.request.urlretrieve(names_url, names_path)
+                    print("✓ Class names downloaded")
+                except Exception as e:
+                    print(f"✗ Failed to download class names: {e}")
+                    raise
+            
+            # Load model
             try:
+                print("Loading YOLO model...")
                 self.net = cv2.dnn.readNet(weights_path, config_path)
                 with open(names_path, 'r') as f:
                     self.classes = [line.strip() for line in f.readlines()]
-                print("✓ YOLO model loaded")
-            except:
-                print("⚠️  YOLO files not found, using OpenCV DNN defaults")
-                # Use OpenCV's pre-built models if available
+                print(f"✓ YOLO model loaded with {len(self.classes)} classes")
+            except Exception as e:
+                print(f"⚠️  Failed to load YOLO: {e}")
+                print("Using simplified detection")
+                self.net = None
                 self.classes = ['person', 'chair', 'bottle', 'cup', 'laptop']
-                print("✓ Using simplified detection")
                 
             # Generate colors for each class
             self.colors = np.random.uniform(0, 255, size=(len(self.classes), 3))
             
         except Exception as e:
             print(f"YOLO loading error: {e}")
+            print("Falling back to cascade classifier")
             self._load_cascade()
     
     def _load_mobilenet(self):
         """Load MobileNet SSD for object detection"""
+        import os
+        import urllib.request
+        
         try:
-            # MobileNet SSD
-            prototxt = 'models/MobileNetSSD_deploy.prototxt'
-            model = 'models/MobileNetSSD_deploy.caffemodel'
+            # MobileNet SSD paths
+            model_dir = 'models'
+            prototxt = os.path.join(model_dir, 'MobileNetSSD_deploy.prototxt')
+            model = os.path.join(model_dir, 'MobileNetSSD_deploy.caffemodel')
             
+            # Create models directory if it doesn't exist
+            os.makedirs(model_dir, exist_ok=True)
+            
+            # Download URLs
+            prototxt_url = 'https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/deploy.prototxt'
+            model_url = 'https://drive.google.com/uc?export=download&id=0B3gersZ2cHIxRm5PMWRoTkdHdHc'
+            # Alternative model URL
+            model_url_alt = 'https://github.com/chuanqi305/MobileNet-SSD/raw/master/mobilenet_iter_73000.caffemodel'
+            
+            # Download prototxt if it doesn't exist
+            if not os.path.exists(prototxt):
+                print("Downloading MobileNet prototxt...")
+                try:
+                    urllib.request.urlretrieve(prototxt_url, prototxt)
+                    print("✓ Prototxt downloaded")
+                except Exception as e:
+                    print(f"✗ Failed to download prototxt: {e}")
+                    raise
+            
+            # Download model if it doesn't exist
+            if not os.path.exists(model):
+                print("Downloading MobileNet model (~23 MB)...")
+                print("⚠️  Note: MobileNet download may be slow or fail.")
+                print("   If it fails, download manually from:")
+                print("   https://github.com/chuanqi305/MobileNet-SSD")
+                try:
+                    # Try alternative URL
+                    urllib.request.urlretrieve(model_url_alt, model)
+                    print("✓ Model downloaded")
+                except Exception as e:
+                    print(f"✗ Failed to download model: {e}")
+                    print("Falling back to cascade")
+                    self._load_cascade()
+                    return
+            
+            # Load model
             try:
+                print("Loading MobileNet SSD...")
                 self.net = cv2.dnn.readNetFromCaffe(prototxt, model)
                 self.classes = ["background", "aeroplane", "bicycle", "bird", "boat",
                                "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
                                "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
                                "sofa", "train", "tvmonitor"]
-                print("✓ MobileNet SSD loaded")
-            except:
-                print("⚠️  MobileNet files not found")
+                print(f"✓ MobileNet SSD loaded with {len(self.classes)} classes")
+            except Exception as e:
+                print(f"⚠️  Failed to load MobileNet: {e}")
+                print("Using simplified detection")
+                self.net = None
                 self.classes = ['person', 'car', 'bottle']
-                print("✓ Using simplified detection")
                 
             self.colors = np.random.uniform(0, 255, size=(len(self.classes), 3))
             
         except Exception as e:
             print(f"MobileNet loading error: {e}")
+            print("Falling back to cascade classifier")
             self._load_cascade()
     
     def _load_cascade(self):
@@ -411,29 +496,36 @@ def test_vision_detection():
     detector = G1VisionDetector(model_type=model_type, confidence_threshold=0.5)
     
     print("\nSelect camera source:")
-    print("1. Local camera (index 0)")
-    print("2. G1 Robot camera (RTSP stream)")
-    print("3. Custom camera URL")
+    print("1. G1 Camera 1 (index 2) - Recommended")
+    print("2. G1 Camera 2 (index 4)")
+    print("3. Custom camera index")
+    print("4. Custom camera URL")
     
     cam_choice = input("\nChoice [1]: ").strip() or "1"
     
     if cam_choice == "1":
-        camera_source = 0
+        camera_source = 2  # Working camera from diagnostic
     elif cam_choice == "2":
-        # G1 default camera stream
-        camera_source = "rtsp://192.168.123.161:8554/main_stream"
-        print(f"\nUsing G1 camera: {camera_source}")
+        camera_source = 4  # Alternative working camera
     elif cam_choice == "3":
+        camera_source = int(input("Enter camera index: ").strip())
+    elif cam_choice == "4":
         camera_source = input("Enter camera URL: ").strip()
     else:
-        camera_source = 0
+        camera_source = 2
     
     # Connect to camera
     if not detector.connect_camera(camera_source):
         print("\n✗ Failed to connect to camera")
-        print("\nTrying fallback camera (index 0)...")
-        if not detector.connect_camera(0):
+        print("\nTrying fallback cameras...")
+        # Try known working cameras
+        for fallback in [2, 4]:
+            print(f"Trying camera {fallback}...")
+            if detector.connect_camera(fallback):
+                break
+        else:
             print("✗ No camera available")
+            print("\nRun: python3 find_cameras.py")
             return
     
     # Start capture
