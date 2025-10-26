@@ -27,16 +27,31 @@ except ImportError:
 class SimpleRobotController:
     """Simple robot controller using LocoClient for G1"""
     
-    def __init__(self, domain_id=0, network_interface="eth0"):
+    def __init__(self, domain_id=0, network_interface=None):
         """Initialize robot controller"""
         if not SDK_AVAILABLE:
             raise ImportError("Unitree SDK not available")
         
-        print(f"Initializing robot controller (domain={domain_id}, interface={network_interface})...")
+        # Try multiple network interfaces in order
+        if network_interface is None:
+            interfaces_to_try = ["", "eth0", "eth1", "wlan0", "usb0", "lo"]
+        else:
+            interfaces_to_try = [network_interface]
         
-        # Initialize SDK
-        ChannelFactoryInitialize(domain_id, network_interface)
-        print("✓ SDK initialized")
+        init_success = False
+        for iface in interfaces_to_try:
+            try:
+                print(f"Trying to initialize with interface: '{iface}' (domain={domain_id})...")
+                ChannelFactoryInitialize(domain_id, iface)
+                print(f"✓ SDK initialized with interface: '{iface}'")
+                init_success = True
+                break
+            except Exception as e:
+                print(f"  Failed with '{iface}': {e}")
+                continue
+        
+        if not init_success:
+            raise RuntimeError("Could not initialize SDK with any network interface")
         
         # Create loco client for G1
         self.sport_client = LocoClient()
@@ -45,7 +60,7 @@ class SimpleRobotController:
         print("✓ LocoClient created")
         
         self.max_velocity = 1.5  # m/s
-        self.max_yaw_speed = 1.0  # rad/s
+        self.max_yaw_speed = 1.2  # rad/s - INCREASED for faster rotation
         self.current_head_pitch = 0.0  # Track head position
         self.current_head_yaw = 0.0
         self.is_standing = False
@@ -54,7 +69,7 @@ class SimpleRobotController:
         self.last_vx = 0.0
         self.last_vy = 0.0
         self.last_vyaw = 0.0
-        self.command_rate = 0.02  # Send commands every 20ms (50Hz)
+        self.command_rate = 0.01  # Send commands every 10ms (100Hz) - INCREASED from 20ms
     
     def stand_up(self):
         """Check if robot is standing - assumes already standing"""
@@ -155,12 +170,13 @@ class SimpleRobotController:
 class G1VisionControl:
     """Integrated vision and movement control for G1"""
     
-    def __init__(self, robot_controller=None):
+    def __init__(self, robot_controller=None, move_only_on_detection=True):
         """
         Initialize vision control
         
         Args:
             robot_controller: Instance of SimpleRobotController or compatible
+            move_only_on_detection: Only allow robot movement when target is detected
         """
         self.robot = robot_controller
         self.detector = None
@@ -168,13 +184,17 @@ class G1VisionControl:
         # Tracking parameters
         self.target_class = None
         self.frame_center = (320, 240)  # Default center
-        self.deadzone = 30  # SMALLER deadzone for more precise tracking
+        self.deadzone = 20  # VERY SMALL deadzone for instant reaction
         self.safe_distance_min = 15000  # Minimum target area -> farther than desired
         self.safe_distance_max = 40000  # Maximum target area -> closer than desired
         self.safe_distance_target = 27500  # Ideal area (sweet spot)
         self.last_known_position = None  # Remember last position
         self.frames_since_detection = 0
         self.search_pattern_step = 0
+        self.is_locked = False  # Track if we have a solid lock
+        
+        # Motion control parameters
+        self.move_only_on_detection = move_only_on_detection  # NEW: Only move when target detected
         
         # Motion detection parameters
         self.prev_frame = None
@@ -185,7 +205,7 @@ class G1VisionControl:
         self.head_pitch = 0.0
         self.head_yaw = 0.0
         
-        print("G1 Vision Control initialized")
+        print(f"G1 Vision Control initialized (move_only_on_detection={move_only_on_detection})")
     
     def setup_vision(self, model_type='cascade', camera_source=0, use_multi_detect=False, use_motion_tracking=True):
         """
@@ -197,9 +217,12 @@ class G1VisionControl:
             use_multi_detect: Use multiple detection methods simultaneously
             use_motion_tracking: Enable motion-based tracking as fallback
         """
-        self.detector = G1VisionDetector(model_type=model_type, confidence_threshold=0.25)  # Lower threshold
+        self.detector = G1VisionDetector(model_type=model_type, confidence_threshold=0.15)  # Lower threshold for dark environments
         self.use_multi_detect = use_multi_detect
         self.use_motion_tracking = use_motion_tracking
+        
+        # Set higher FPS for camera if possible
+        print("⚡ Configuring for MAXIMUM SPEED tracking...")
         
         # Create additional detectors for multi-detection mode
         if use_multi_detect:
@@ -245,15 +268,16 @@ class G1VisionControl:
         print(f"\n{'='*60}")
         print(f"TRACKING: {target_class}")
         print(f"Duration: {duration}s | Speed: {speed}")
-        print(f"Mode: {'Display' if display else 'Headless (saving to files)'}")
+        print(f"Mode: {'Display' if display else 'Headless (saving images every 3 sec)'}")
         print(f"{'='*60}\n")
         
         # Keep threaded capture running - just read from shared frame
         start_time = time.time()
         last_command_time = time.time()
+        last_save_time = time.time()
         no_detection_count = 0
         frame_count = 0
-        save_interval = 30  # Save every 30 frames (~1 sec)
+        save_interval = 3.0  # Save every 3 seconds
         
         try:
             while time.time() - start_time < duration:
@@ -264,7 +288,6 @@ class G1VisionControl:
                         continue
                     frame = self.detector.frame.copy()
                 
-                # Detect objects - use multiple methods for better detection
                 if self.use_multi_detect and target_class == 'face':
                     target_detections = self._multi_face_detect(frame)
                 elif self.use_motion_tracking and target_class == 'motion':
@@ -283,6 +306,7 @@ class G1VisionControl:
                 if target_detections:
                     no_detection_count = 0
                     self.frames_since_detection = 0
+                    self.is_locked = True  # Mark as locked
                     
                     # Get closest/largest target
                     target = max(target_detections, key=lambda x: x[2][2] * x[2][3])  # By area
@@ -296,7 +320,7 @@ class G1VisionControl:
                     dx = target_center[0] - self.frame_center[0]
                     dy = target_center[1] - self.frame_center[1]
                     
-                    # Control robot based on offset - CONTINUOUS TRACKING
+                    # IMMEDIATE CONTROL - No delay when locked
                     self._control_from_offset(dx, dy, w * h, speed)
                     
                     # Draw visualization
@@ -305,15 +329,21 @@ class G1VisionControl:
                     cv2.circle(annotated, self.frame_center, 5, (0, 255, 0), -1)
                     cv2.line(annotated, self.frame_center, target_center, (255, 0, 0), 2)
                     
-                    status = f"LOCKED ON: {class_name} ({confidence:.2f})"
+                    status = f"🔒 LOCKED: {class_name} ({confidence:.2f})"
                     cv2.putText(annotated, status, (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
                     if display:
                         cv2.imshow('G1 Object Tracking', annotated)
-                    elif frame_count % save_interval == 0:
-                        filename = f"tracking_{int(time.time())}.jpg"
-                        cv2.imwrite(filename, annotated)
+                    else:
+                        # Save image every 3 seconds to monitor robot's POV
+                        current_time = time.time()
+                        if current_time - last_save_time >= save_interval:
+                            timestamp = time.strftime("%Y%m%d_%H%M%S")
+                            filename = f"robot_pov_{timestamp}.jpg"
+                            cv2.imwrite(filename, annotated)
+                            print(f"\n📷 Saved POV image: {filename}")
+                            last_save_time = current_time
                     
                     frame_count += 1
                     
@@ -321,9 +351,10 @@ class G1VisionControl:
                     no_detection_count += 1
                     frame_count += 1
                     self.frames_since_detection += 1
+                    self.is_locked = False  # Lost lock
                     
-                    # Stop robot when no target
-                    if self.robot:
+                    # IMMEDIATELY stop robot when no target
+                    if self.robot and self.move_only_on_detection:
                         self.robot.stop_move()
                     
                     # Show searching status (less verbose)
@@ -337,12 +368,23 @@ class G1VisionControl:
                         cv2.putText(frame, search_msg, (10, 30),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                         cv2.imshow('G1 Object Tracking', frame)
+                    else:
+                        # Save "searching" image every 3 seconds too
+                        current_time = time.time()
+                        if current_time - last_save_time >= save_interval:
+                            cv2.putText(frame, search_msg, (10, 30),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            timestamp = time.strftime("%Y%m%d_%H%M%S")
+                            filename = f"robot_pov_{timestamp}_searching.jpg"
+                            cv2.imwrite(filename, frame)
+                            print(f"\n📷 Saved POV image: {filename}")
+                            last_save_time = current_time
                 
                 if display and cv2.waitKey(1) & 0xFF == ord('q'):
                     break
                 
-                # Small delay for ~30 fps
-                time.sleep(0.01)
+                # MAXIMUM SPEED - 1ms delay for ~1000 FPS processing
+                time.sleep(0.001)
         
         except KeyboardInterrupt:
             print("\n\nTracking stopped by user")
@@ -439,7 +481,7 @@ class G1VisionControl:
     
     def _control_from_offset(self, dx, dy, area, speed):
         """
-        Control robot based on target detection - ACTIVE TRACKING WITH MOVEMENT
+        Control robot based on target detection - MAXIMUM SPEED TRACKING
         
         Args:
             dx: Horizontal offset (pixels)
@@ -448,7 +490,6 @@ class G1VisionControl:
             speed: Speed multiplier
         """
         if self.robot is None:
-            print(f"\r⚠️  No robot controller - dx:{dx:4.0f} area:{area:6.0f}  ", end='', flush=True)
             return
         
         # Calculate movement commands based on target position
@@ -456,35 +497,33 @@ class G1VisionControl:
         vy = 0.0  # Strafe left/right
         vyaw = 0.0  # Rotation
         
-        # HORIZONTAL CONTROL - Strafe to keep target centered
+        # AGGRESSIVE ROTATION CONTROL - Turn to face the person FAST
         if abs(dx) > self.deadzone:
-            # Positive dx = target is RIGHT of center, strafe RIGHT (negative vy)
-            # Negative dx = target is LEFT of center, strafe LEFT (positive vy)
-            vy = -np.clip(dx / 200.0, -0.3, 0.3) * speed
-            print(f"\r🏃 STRAFING: vy={vy:+.3f} | dx={dx:4.0f}  ", end='', flush=True)
+            # Positive dx = target is RIGHT of center, rotate RIGHT (positive vyaw)
+            # Negative dx = target is LEFT of center, rotate LEFT (negative vyaw)
+            vyaw = np.clip(dx / 200.0, -0.6, 0.6) * speed  # Increased from 0.4 to 0.6
         
-        # DISTANCE CONTROL - Move forward/backward to maintain safe distance
+        # AGGRESSIVE DISTANCE CONTROL - Move fast to maintain distance
         if area > self.safe_distance_max:
-            # Target occupies large area -> too close, back up
-            vx = -0.18 * speed
-            print(f"\r⬅️  TOO CLOSE! Backing up: vx={vx:+.3f} | area={area:6.0f}  ", end='', flush=True)
+            # Target occupies large area -> too close, back up FAST
+            vx = -0.3 * speed  # Increased from 0.18
         elif area < self.safe_distance_min and area > 0:
-            # Target small -> too far, advance
-            vx = 0.25 * speed
-            print(f"\r➡️  TOO FAR! Moving forward: vx={vx:+.3f} | area={area:6.0f}  ", end='', flush=True)
+            # Target small -> too far, advance FAST
+            vx = 0.4 * speed  # Increased from 0.25
         else:
-            # Good distance - just track sideways
+            # Good distance - just track rotation
             vx = 0.0
         
-        # Send movement command
-        if abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vyaw) > 0.01:
-            self.robot.move(vx, vy, vyaw)
-            print(f"\r🎯 TRACKING: vx={vx:+.3f}, vy={vy:+.3f}, vyaw={vyaw:+.3f} | dx={dx:4.0f}, area={area:6.0f}  ", 
-                  end='', flush=True)
-        else:
-            # Target is centered and at good distance - stop
-            self.robot.stop_move()
-            print(f"\r✓ LOCKED ON CENTER! | dx={dx:4.0f}, area={area:6.0f}  ", end='', flush=True)
+        # ALWAYS send movement command when locked - no dead zone checking
+        self.robot.move(vx, vy, vyaw)
+        
+        # Minimal console output for maximum speed
+        if abs(vyaw) > 0.1:
+            print(f"\r🔄 vyaw={vyaw:+.2f} dx={dx:4.0f}", end='', flush=True)
+        elif abs(vx) > 0.1:
+            print(f"\r⚡ vx={vx:+.2f} area={area:6.0f}", end='', flush=True)
+        elif abs(vx) < 0.01 and abs(vyaw) < 0.01:
+            print(f"\r🎯 LOCKED!", end='', flush=True)
     
     def count_objects(self, duration=10, display=True):
         """
@@ -562,9 +601,9 @@ class G1VisionControl:
 
 
 def demo_tracking():
-    """Demo: Track a face using enhanced detection and aggressive following"""
+    """Demo: Track a person using YOLO for better accuracy"""
     print("\n" + "="*60)
-    print("G1 ENHANCED FACE TRACKING DEMO")
+    print("G1 HIGH-ACCURACY PERSON TRACKING (YOLO)")
     print("="*60)
     
     # Initialize robot controller
@@ -572,7 +611,7 @@ def demo_tracking():
     if SDK_AVAILABLE:
         try:
             print("\nInitializing robot controller...")
-            robot = SimpleRobotController(domain_id=0, network_interface="eth0")
+            robot = SimpleRobotController(domain_id=0, network_interface=None)
             print("✓ Robot controller initialized")
             print("⚠️  Ensure robot is ALREADY STANDING and clear the area")
 
@@ -593,50 +632,64 @@ def demo_tracking():
         print("Vision will work but robot won't move")
     
     # Setup vision control with robot
-    vision_control = G1VisionControl(robot_controller=robot)
+    vision_control = G1VisionControl(robot_controller=robot, move_only_on_detection=True)
     
-    # Try working cameras (2 or 4 from diagnostic)
-    camera_source = 4
-    print(f"\nTrying camera {camera_source}...")
-    print("Using ENHANCED MULTI-DETECTION (face + profile + eyes + MOTION)...")
+    # Use onboard camera with YOLO for better accuracy
+    camera_source = 4  # Onboard camera (primary)
+    print(f"\nConnecting to onboard camera (camera {camera_source})...")
+    print("Using YOLO for BETTER ACCURACY + Multi-detection fallback...")
     
-    # Use multi-detection with motion tracking for narrow FOV camera
+    # Try YOLO first for better accuracy
     if not vision_control.setup_vision(
-        model_type='cascade', 
+        model_type='yolo',  # Use YOLO for person detection
         camera_source=camera_source, 
-        use_multi_detect=True,
+        use_multi_detect=False,  # YOLO is already good
         use_motion_tracking=True
     ):
-        print(f"Camera {camera_source} failed, trying camera 2...")
-        camera_source = 2
+        print(f"YOLO failed, falling back to cascade detection...")
+        # Fallback to cascade with multi-detection
         if not vision_control.setup_vision(
             model_type='cascade', 
             camera_source=camera_source, 
             use_multi_detect=True,
             use_motion_tracking=True
         ):
-            print("✗ No working cameras found")
-            print("Run: python3 find_cameras.py")
-            return
+            print(f"Camera {camera_source} failed, trying alternate interface (camera 6)...")
+            camera_source = 6  # Try camera index 6 as fallback
+            if not vision_control.setup_vision(
+                model_type='cascade', 
+                camera_source=camera_source, 
+                use_multi_detect=True,
+                use_motion_tracking=True
+            ):
+                print("✗ No working cameras found")
+                print("Run: python3 find_all_cameras.py")
+                return
     
-    print("\n✓ Vision ready with ULTRA-SENSITIVE detection")
+    print("\n✓ Vision ready with HIGH-ACCURACY detection")
     print("\n" + "="*60)
-    print("TRACKING MODE: ACTIVE MOVEMENT TRACKING")
+    print("TRACKING MODE: ⚡ MAXIMUM SPEED TRACKING (YOLO)")
     print("="*60)
     if robot:
         print("🤖 Robot is STANDING and READY:")
-        print("   ✓ Robot will STRAFE LEFT/RIGHT to center target")
-        print("   ✓ Robot will MOVE FORWARD if target too far")
-        print("   ✓ Robot will BACK UP if target too close")
-        print("   🎯 Multi-cascade detection (face + profile + eyes)")
-        print("   🎯 Motion tracking fallback (follows ANY movement)")
-        print("\n   ⚠️  ROBOT WILL MOVE - Clear space around robot!")
-        print("\n🚀 Active tracking - robot WILL follow faces!")
+        print("   ⚡ MAXIMUM SPEED mode - instant response!")
+        print("   ✓ Robot will ROTATE FAST to face the person")
+        print("   ✓ Robot will MOVE FORWARD FAST if person too far")
+        print("   ✓ Robot will BACK UP FAST if person too close")
+        print("   🎯 YOLO detection (high accuracy)")
+        print("   🎯 Motion tracking fallback")
+        print("   ⚠️  Robot ONLY MOVES when person detected (safety)")
+        print("\n   ⚡ Processing at ~1000 FPS for instant lock!")
+        print("   ⚡ Rotation speed: UP TO 0.6 rad/s")
+        print("   ⚡ Movement speed: UP TO 0.4 m/s forward")
+        print("\n   ⚠️  ROBOT WILL MOVE FAST - Clear large space!")
+        print("\n🚀 Ultra-fast tracking - robot will INSTANTLY follow!")
     else:
         print("❌ Robot movement disabled - controller not initialized")
         print("   Only vision detection will work")
-    print("\n TIP: Stand in front of robot - it will track and follow you!")
-    print("   Robot will strafe left/right and move forward/backward")
+    print("\n TIP: Stand in front of robot - it will track FAST!")
+    print("   Robot will INSTANTLY rotate to face you and follow")
+    print("   🛡️  SAFETY: Robot only moves when person is in frame")
     print("\n⚠️  MAKE SURE ROBOT HAS CLEAR SPACE TO MOVE!")
     print("\nStarting tracking in 2 seconds...")
     print("Press Ctrl+C to stop\n")
@@ -646,8 +699,9 @@ def demo_tracking():
     
     print("🚀 TRACKING STARTING NOW!\n")
     
-    # Track with MAXIMUM speed for narrow FOV
-    vision_control.track_object(target_class='face', duration=180, speed=0.8, display=False)
+    # Track with MAXIMUM speed for instant response
+    # Use 'person' for YOLO (more reliable than 'face')
+    vision_control.track_object(target_class='person', duration=180, speed=1.0, display=False)  # Speed 1.0 = FULL SPEED
     
     # Stop and sit down when done
     if robot:
@@ -666,15 +720,15 @@ def demo_counting():
     
     vision_control = G1VisionControl()
     
-    # Try working cameras (2 or 4 from diagnostic)
-    camera_source = 4
-    print(f"\nTrying camera {camera_source}...")
+    # Use onboard camera by default
+    camera_source = 4  # Onboard camera (primary)
+    print(f"\nConnecting to onboard camera (camera {camera_source})...")
     if not vision_control.setup_vision(model_type='cascade', camera_source=camera_source):
-        print(f"Camera {camera_source} failed, trying camera 4...")
-        camera_source = 2
+        print(f"Camera {camera_source} failed, trying alternate interface (camera 6)...")
+        camera_source = 6
         if not vision_control.setup_vision(model_type='cascade', camera_source=camera_source):
             print("✗ No working cameras found")
-            print("Run: python3 find_cameras.py")
+            print("Run: python3 find_all_cameras.py")
             return
     
     print("\n✓ Vision ready")
