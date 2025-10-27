@@ -234,7 +234,7 @@ class LLMInterpreter:
                     print(f"⚠️  OpenAI failed: {e}")
         
         if GEMINI_AVAILABLE:
-            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+            api_key = os.getenv("GOOGLE_API_KEY")
             if api_key:
                 try:
                     genai.configure(api_key=api_key)
@@ -373,8 +373,7 @@ def main():
     if not any([
         os.getenv("GROQ_API_KEY"),
         os.getenv("OPENAI_API_KEY"),
-        os.getenv("GOOGLE_API_KEY"),
-        os.getenv("GEMINI_API_KEY")
+        os.getenv("GOOGLE_API_KEY")
     ]):
         print("\n❌ No API keys found!")
         print("   Please add your API keys to the .env file")
